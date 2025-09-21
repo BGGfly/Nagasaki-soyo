@@ -97,48 +97,52 @@ for i, file_path in enumerate(all_mat_files):
     fault_type, fault_size, load_hp, rpm_in_filename_val = parse_filename(name_without_ext)
 
     if fault_type is not None:  # 如果文件名解析成功
-        # 加载 .mat 文件以获取RPM和信号信息
         try:
             data_dict = loadmat(file_path)
         except Exception as e:
             print(f'警告: 无法加载文件 {file_path}: {e}')
-            continue  # 跳过当前文件
+            continue
 
-        rpm_val_from_mat = np.nan  # 从.mat文件中加载的RPM
-        sampling_freq = np.nan  # 默认值
-        bearing_location = 'Unknown'  # 默认值
+        rpm_val_from_mat = np.nan
+        sampling_freq = np.nan
+        bearing_location = 'Unknown'
 
-        # 遍历字典的键，找到RPM变量和信号变量
         for key in data_dict.keys():
             if 'RPM' in key and isinstance(data_dict[key], np.ndarray) and data_dict[key].size == 1:
                 rpm_val_from_mat = data_dict[key].item()
-                break  # 找到RPM后就退出循环
+                break
 
-        # RPM优先级：.mat文件中的RPM > 文件名中的RPM
         rpm_final_val = rpm_val_from_mat
         if np.isnan(rpm_final_val) and not np.isnan(rpm_in_filename_val):
             rpm_final_val = rpm_in_filename_val
 
-        # 确定采样频率和故障轴承位置
+        # =================================================================
+        # ▼▼▼ 核心修正部分 ▼▼▼
+        # =================================================================
         normalized_path = os.path.normpath(file_path)
         path_parts = normalized_path.split(os.sep)
 
         for part in path_parts:
-            part_lower = part.lower()  # 转换为小写以便进行大小写不敏感的匹配
-            if 'khz_de_data' in part_lower:
+            part_lower = part.lower()
+            # 只要文件夹名称中包含 'khz'，我们就处理它
+            if 'khz' in part_lower:
+                # 1. 提取采样频率
                 match_freq = re.search(r'(\d+)khz', part_lower)
                 if match_freq:
                     sampling_freq = int(match_freq.group(1)) * 1000
-                    bearing_location = 'DE'
-                    break
-            elif 'khz_fe_data' in part_lower:
-                match_freq = re.search(r'(\d+)khz', part_lower)
-                if match_freq:
-                    sampling_freq = int(match_freq.group(1)) * 1000
-                    bearing_location = 'FE'
-                    break
 
-        # 存储信息到字典
+                # 2. 如果存在，再提取轴承位置
+                if 'de_data' in part_lower:
+                    bearing_location = 'DE'
+                elif 'fe_data' in part_lower:
+                    bearing_location = 'FE'
+
+                # 找到并处理完包含khz的文件夹后，就可以停止对路径的搜索了
+                break
+        # =================================================================
+        # ▲▲▲ 修正结束 ▲▲▲
+        # =================================================================
+
         all_data_info_list.append({
             'FilePath': file_path,
             'FileName': file_name_with_ext,
@@ -150,10 +154,8 @@ for i, file_path in enumerate(all_mat_files):
             'BearingLocation': bearing_location,
             'FaultType_Label': fault_type_map[fault_type]
         })
-
     else:
         print(f'警告: 文件名格式不匹配，无法解析: {file_name_with_ext}')
-        # 对于无法解析的文件，将不会被添加到 all_data_info_list 中
 
 # 将列表转换为 Pandas DataFrame 便于查看和操作
 source_data_df = pd.DataFrame(all_data_info_list)
