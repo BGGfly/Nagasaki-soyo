@@ -1,0 +1,17 @@
+FilePath,FileName,RPM,SamplingFreq_Hz,FaultType_Label
+data\target\A.mat,A.mat,600,32000,-1
+data\target\B.mat,B.mat,600,32000,-1
+data\target\C.mat,C.mat,600,32000,-1
+data\target\D.mat,D.mat,600,32000,-1
+data\target\E.mat,E.mat,600,32000,-1
+data\target\F.mat,F.mat,600,32000,-1
+data\target\G.mat,G.mat,600,32000,-1
+data\target\H.mat,H.mat,600,32000,-1
+data\target\I.mat,I.mat,600,32000,-1
+data\target\J.mat,J.mat,600,32000,-1
+data\target\K.mat,K.mat,600,32000,-1
+data\target\L.mat,L.mat,600,32000,-1
+data\target\M.mat,M.mat,600,32000,-1
+data\target\N.mat,N.mat,600,32000,-1
+data\target\O.mat,O.mat,600,32000,-1
+data\target\P.mat,P.mat,600,32000,-1
