@@ -115,7 +115,49 @@ come from nuaa HeYuan 37
                             “内圈 (IR)”和“滚动体 (B)”的数量也远多于“正常”类别。
                             这个数据分布解释了为什么我们之前在训练“热身”阶段时，模型的学习速度会那么缓慢——因为它看到的绝大部分都是故障样本，很难学习到稀有的“正常”样本的特征。
                 方案：   引入了加权随机采样器 (WeightedRandomSampler)，它的作用正是在每次抽取训练数据时，提高‘正常’这类稀有样本被抽中的概率，从而在训练层面动态地解决了这个不平衡问题。
-                
+        3.2.4.7***************新增问题
+            没有监控域分类器的准确率
+                    对抗损失权重 ALPHA 固定
+                    在 warmup 后直接用 ALPHA = 0.1，但 DANN 推荐用 进度调度（p 从 0→1）来平滑增加对抗强度。
+                    虽然计算了 lambda_val = 2/(1+exp(-10p))-1，但它只传给了模型的 GRL，没有和 ALPHA 动态结合。这样可能会导致训练不稳定。
+                    学习率未分组现在用同一个 Adam 优化器和同一学习率 1e-3。
+                    方案：
+                    特征提取器 G_f → 小学习率（如 1e-4）；
+                    标签分类器 G_y 和 域分类器 G_d → 稍大一点（如 1e-3）。
+                    未记录 domain loss / acc
+                    没有日志可视化 domain 部分的收敛情况（loss_d, acc_d），不利于诊断。
+                    如果 domain acc 一直接近 100%，说明特征未对齐；如果一直很低，说明域分类器没学到东西。
+                    评价指标单一
+                    你现在只看源域 test accuracy，没有：
+                    目标域预测结果（即使无标签，也可以看置信度分布）；
+                    源域混淆矩阵、F1-score；
+                    t-SNE/UMAP 特征对齐可视化。
+
+                    dann_model.py优化：1. 特征维度太小（64）最后只得到 64 维特征，对轴承振动信号可能不够 2.Domain Classifier 结构太弱3. Label Classifier dropout 太大
+                                    方案：FeatureExtractor
+
+                                    通道数扩展到 32 → 64 → 128 → 256，增强特征表达能力。
+                                    使用多尺度 kernel（32, 16, 8, 3）捕捉不同频率成分。
+                                    最后输出 256 维特征。
+                                    LabelClassifier
+                                    两层隐藏层（128 → 64），dropout=0.3（避免欠拟合）。
+                                    DomainClassifier
+                                    两层隐藏层（128 → 64），dropout=0.5（防止 domain classifier 过强过拟合）。
+                                    forward()
+                                    增加 return_features=True 选项，便于做 t-SNE 可视化。
+                    dann_data_loader.py优化：1：每次 __getitem__ 都 loadmat每个样本都会重新从磁盘读 .mat → 非常慢如果文件较多/较大，训练会非常卡。
+                                            初始化时一次性读入并缓存，而不是每次取样都读磁盘。
+                                            性能优化：加入 .mat 信号缓存，避免每次 __getitem__ 都重复读磁盘。
+                                            健壮性：_get_signal_from_mat 更明确地优先选择常见信号键（如 DE_time, FE_time, BA_time），避免误取 time。
+                                            类别平衡：np.bincount(..., minlength=num_classes)，保证所有类别都有计数，避免索引错误。
+                                            domain_label：直接返回 dataset 的 domain_label，不用在训练脚本里重新构造。
+
+                    性能差：源域单独分类 最高已经到 99%+，这说明：
+                            FeatureExtractor + Classifier 本身是足够强的，数据也没问题。
+                            模型能在源域收敛到很高准确率，所以问题不在数据和特征提取，而是在 DANN 对抗训练的设置。
+                    DANN优化：延长 warmup从 10 → 30 epoch，让分类器先学好，再开始 domain 对抗。减小对抗强度，现在 ALPHA=0.1 太大，可以降到 0.05 或 0.01。
+                                lambda_val 的调度也可以改为更平滑的曲线，而不是快速升到 1
+                                降低学习率，Adam lr 从 0.001 → 0.0005 或更小。
         3.2.5 最终结果：
                 经过成千上万次的博弈，系统会达到一个平衡：
                 **“画师”（特征提取器）被训练得既能画出让“诊断专家”满意的、可区分故障的画像，又能画出让“鉴别师”**抓狂的、无法区分领域的“中性”画像。
