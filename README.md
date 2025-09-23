@@ -1,173 +1,397 @@
-# Nagasaki-soyo
-come from nuaa HeYuan 37 
------------------------------------------------------------2025/09/21 22：03---------------------------------------------------------------
+intro: 明确源域数据筛选标准：
+	    域数据包含驱动端（DE）、风扇端（FE）、基座（BA） 三类传感器信号，且明确 “距离故障轴承越近，信号故障特征越显著”（如驱动端信号更适合驱动端轴承故障分析）。            需先筛选核心数据，排除冗余 / 弱特征数据：
+        	    优先选择驱动端（DE）信号：驱动端直接连接电机转轴，振动信号能清晰捕获驱动端轴承振动及风扇端传递信号”，且源域 DE 信号涵盖 12kHz/48kHz 两种采样频率（文件表 1），信息最完整，优先作为核心分析对象。排除基座（BA）信号：文件说明 “BA 信号经多层传递后故障特征高度衰减，仅用于辅助分析”，暂不纳入核心数据集；可选保留风扇端（FE）信号：若后续需补充样本，可保留 FE 信号（12kHz 采样，文件表 1 中风扇端轴承为 SKF6203），但需单独标记传感器类型。
+        	平衡故障类别与尺寸：文件明确源域故障类别为 4 类（正常 N、滚动体 B、内圈 IR、外圈 OR），且故障尺寸 / 位置存在差异：
+        滚动体（B）/ 内圈（IR）：各 4 种故障尺寸（0.007/0.014/0.021/0.028 英寸），各尺寸至少选 10 个文件（如 B007_0~3、IR007_0~3 等）；
+        外圈（OR）：3 种故障尺寸（0.007/0.014/0.021 英寸）+3 个采样位置（3 点 Orthogonal、6 点 Centered、12 点 Opposite），每个尺寸 - 位置组合至少选 5 个文件（如 OR007@3_0~3、OR007@6_0~3 等）；正常（N）：仅 4 个文件（N_0~3），全部保留（文件明确正常样本稀缺）
+        	统一采样频率
+        	文件中 DE 信号有 12kHz/48kHz 两种采样频率，若需简化分析，可优先选择 12kHz 信号（覆盖 FE/DE 双传感器，样本量更多）；若需高分辨率信号，可单独分析 48kHz DE 信号，最终需在报告中标明选择依据（如 “选择 12kHz DE 信号以匹配目标域 32kHz 下的下采样需求”）。
 
-更改：
-    1.前进行特征提取的时候，进行可视化的时候，也是没有正常轴承对应的值，原始数据集中“正常”类别的样本数量极度稀少，导致数据严重不平衡。
-当一个类别的样本太少时：箱线图 (Box Plot) 会变得没有统计意义，可能只显示为一条线，无法看出分布情况。t-SNE图 中，这个稀有类别的几个点很容易被淹没在其他大量的点中，
-或者被错误地拉入其他大类别的簇里，从而给一种“特征无法区分正常样本”的错觉。先对数据进行过采样 (Oversampling)，人为地增加稀有类别的样本数量，使得所有类别在可视化时“势均力敌”。
-使用 SMOTE (Synthetic Minority Over-sampling Technique) 技术。
-    2.生成source_data_metadata.csv文件时SamplingFreq_Hz 和 BearingLocation 字段没有被正确解析。根源在于从文件路径中提取采样频率和轴承位置的逻辑不够完善。
-原来的代码要求文件夹名称必须同时包含频率（如48khz）和轴承位置（如_de_data或_fe_data）这两个信息。
-对于故障数据，文件夹名是 12khz_de_data，满足条件，所以解析成功。对于正常数据，文件夹名是 48kHz_Normal_data，它只包含了频率信息，没有包含 de 或 fe，导致代码跳过了它，未能提取出采样频率。
-解决方案：修正路径解析逻辑
-找到包含 khz 的文件夹部分。从中提取出频率。如果这个文件夹部分还包含 de 或 fe，那么再提取位置信息。
-
-
-使用smote过采样后生成的文件以***_somte.***命名。
-
------------------------------------------------------------2025/09/21 22：03---------------------------------------------------------------
-
-
------------------------------------------------------------2025/09/22 13：06 问题三---------------------------------------------------------------
-三：迁移诊断。
-    本阶段的核心目标是构建一个迁移学习模型，这个模型需要克服源域（试验台，高转速）和目标域（实际列车，低转速）之间的转速不匹配问题，并最终对16个无标签的目标域文件进行故障诊断。
-采用先进的深度迁移学习方案，具体来说是域对抗神经网络 (Domain Adversarial Neural Network, DANN)。
-    我们将分步完成以下工作流：
-1.准备数据：编写一个Python脚本 (dann_data_loader.py)，创建能够同时加载源域和目标域数据的数据管道。
-    代码：dann_data_loader.py。它的作用是定义一个 Dataset 类，并创建能够同时为模型提供源域和目标域数据的数据加载器（DataLoader）。
-    执行：
-        成功加载并处理了源域和目标域的所有 .mat 文件。将源域数据按照80/20的比例，划分为了训练集 (22767个样本) 和测试集 (5691个样本)。
-        最终成功创建了我们后续训练所需的所有三个数据加载器 (source_train_loader, source_test_loader, target_loader)。
-2.构建模型：编写一个脚本 (dann_model.py)，使用PyTorch定义DANN模型的完整架构。
-    创建一个名为 dann_model.py 的新脚本文件。这个文件将包含DANN模型的完整定义，包括特征提取器、标签分类器、域分类器以及核心的梯度反转层。
-    代码定义了迁移学习所需的所有神经网络组件：
-    FeatureExtractor: 核心的1D卷积网络，用于从原始信号中自动学习特征。
-    Classifier: 一个通用的全连接网络，用于分类任务。
-    DANN: 将上述组件和梯度反转层（GRL）组装起来，形成最终的对抗网络。
-2.5
-    至此，完成任务三的所有“准备工作”：
-    a.数据管道 (dann_data_loader.py)：可以持续、高效地提供源域和目标域的数据。
-    b.模型架构 (dann_model.py)：定义了我们进行学习所需的神经网络结构。
-    最后：编写主训练脚本 train_dann.py。导入我们之前创建的数据加载器和模型，实现核心的对抗训练循环，并在训练过程中监控性能、保存最佳模型。
-3.训练模型：编写主训练脚本 (train_dann.py)，实现对抗训练循环，并保存训练好的最终模型。
-    3.1
-        修改 train_dann.py: 增加代码，用于记录并绘制训练全过程的损失（Loss）和准确率（Accuracy）曲线。
-        创建一个新的分析脚本：编写一个 evaluate_and_visualize.py 脚本，用于加载训练好的最佳模型，并生成更深入的性能分析图，包括混淆矩阵和最重要的t-SNE特征分布图
-    3.2 域对抗训练(Domain-Adversarial Training)
-        3.2.1 域对抗训练
-               域对抗训练是一种让神经网络学会在不同领域（Domain）之间找到共同特征的方法。这里的领域指的就是数据分布不同的数据集，在项目中，它们是：
-               源域 (Source Domain)：试验台上的轴承数据（高转速，带标签）。
-               目标域 (Target Domain)：实际列车上的轴承数据（低转速，无标签）。
-        3.2.2 核心
-                我们面临的最大问题是域偏移 (Domain Shift)。由于转速不同，一个在高转速数据上学得很好的模型，看到低转速数据时会“水土不服”，因为它所依赖的故障频率特征全都偏移了位置。
-                希望模型能学会一种“火眼金睛”，能够忽略掉那些与转速相关的表面特征（比如故障频率在160Hz还是54Hz），而是去学习更深层次、更本质的故障模式（比如“是否存在周期性的冲击”这个现象本身）。
-                这种不受具体工况影响的本质特征，我们就称之为**“领域不变特征” (Domain-Invariant Features)**。
-        3.2.3 工作原理
-                DANN模型里有三个关键角色:
-                角色一：特征提取器 (Feature Extractor)
-                        身份：一个技艺精湛的“画师”（我们的1D-CNN）。
-                        任务：观察输入的振动信号（无论是源域还是目标域的），并从中提炼出一幅“特征画像”（一个由数字组成的特征向量）。
-                        它的困境：它画出的画像，既要能体现出故障的本质（是内圈坏了还是外圈坏了），又要画得足够“中性”，让人看不出这幅画是基于高转速信号还是低转速信号画的。
-                角色二：标签分类器 (Label Classifier)
-                        身份：一个经验丰富的“故障诊断专家”。
-                        任务：只看“画师”画出的特征画像，然后判断这幅画描绘的究竟是哪种故障（正常、内圈、外圈、滚动体）。
-                        它的训练：它只能接触到我们提供的源域数据（因为只有源域数据有正确答案），它的目标是尽可能准确地进行故障分类。
-                角色三：域分类器 (Domain Classifier)
-                        身份：一个非常挑剔的“领域鉴别师”。
-                        任务：也只看“画师”画出的特征画像，但它的任务是分辨这幅画的“风格”，即判断这幅画是基于源域（高转速）的信号画的，还是基于目标域（低转速）的信号画的。
-        3.2.4 对抗过程
-                在训练的每一步，博弈都在发生：
-                a.**“画师”（特征提取器）**会同时接收来自源域和目标域的信号，并为它们画出“特征画像”。        
-                b.博弈开始：画像被同时送给**“诊断专家”（标签分类器）和“鉴别师”（域分类器）**。
-                c.两个优化目标：
-                        “诊断专家”的目标：它看着源域的画像和对应的答案，告诉“画师”：“你这张画得很好，我能看出是内圈故障，继续保持！” 或者 “你这张画得不好，我看不出是什么故障，你得改！”。
-                        这个过程的目标是最小化标签分类损失 (Label Loss)。
-                        “鉴别师”的目标：它看着所有画像，努力分辨它们的风格，并告诉系统：“这张是源域风格，那张是目标域风格”。它的目标是最小化域分类损失 (Domain Loss)，即尽可能准确地分辨出领域。
-                d.对抗的精髓：梯度反转层 (GRL)
-                        当“鉴别师”的意见（梯度）要传回给“画师”时，会经过一个梯度反转层 (GRL)。
-                        GRL就像一个“叛逆的传话筒”，它会把“鉴别师”的意见完全颠倒。
-                        如果“鉴别师”说：“这张画太像源域风格了，特征太明显，下次改掉！”，GRL会把这个指令变成：“这张画太像源域风格了，干得漂亮，下次继续这么画，让‘鉴别师’更容易认出来！”
-                        但是，优化器的总体目标是最小化总损失。为了最小化这个被颠倒后的指令，我们的“画师”（特征提取器）就只有一个选择：画出让“鉴别师”完全无法分辨的画像，即两种风格完全一样。
-                        这样，“鉴别师”就只能胡乱猜测，它的损失就会很高，而经过GRL反转后，传递给“画师”的指令就接近于零。
-        3.2.4.1标签损失（Label Loss）下降，但测试准确率（Test Acc）也随之崩溃——是训练域对抗网络（DANN）时一个非常经典且重要的问题。
-                问题根源：对抗任务“用力过猛”
-                这个问题的根本原因在于，模型在执行两个相互竞争的任务时，过于“偏袒”了域对抗任务，而牺牲了核心的故障分类任务。
-        3.2.4.2 修改超参数
-                之前的代码，它存在几个问题：
-                    学习率固定，导致训练过程不稳定。
-                    混合精度（AMP）的API调用方式在较新版PyTorch中会引发 TypeError。
-                    没有启用 cudnn.benchmark 加速。
-                修改：修正了AMP的API调用，以兼容新版PyTorch。
-                    新增了学习率调度器（Learning Rate Scheduler），这是解决训练不稳定、准确率剧烈波动的最有效方法。
-                    启用了cuDNN自动调优，以进一步加速。
-        3.2.4.3 解决性能无法稳步提升的问题
-                a.降低初始学习率 初始的lr=0.001对于这个困难的任务来说，可能依然“步子迈得太大”，导致优化器在最优解附近剧烈震荡。
-                b. 进一步降低对抗权重 当前的alpha=0.1可能还是略高。给分类任务更高的优先级。
-                即使前期准确率爬升得慢一些，也要避免这种“进一步退两步”的剧烈震荡，力求让准确率能够持续、平滑地向上攀升。
-        3.2.4.4 新增优化
-                     TARGET_ACCURACY = 90.0  # 目标准确率（%），达到后就停止
-                    MAX_EPOCHS = 400  # 最大训练轮次，作为“硬”上限
-                    PATIENCE = 20  # “耐心值”，连续20轮准确率不提升就停止
-                    同时满足patience后自动重新开始
-        3.2.4.5 新增问题：“自动重启”功能正常工作了，在第一轮尝试（Attempt 1）因为20轮性能不提升而结束后，它自动开始了第二次尝试。
-                         然而，每一次新的尝试都快速地陷入了同样的低准确率困境（25%-35%）。训练方法本身需要进行一次关键的调整。
-                方案：在训练的最开始，特征提取器是完全随机的，它产生的特征是无意义的。如果此时域分类器过早、过强地介入，很容易将整个优化过程引入歧途，导致模型学会一些“奇怪”的、无法泛化的特征。
-                        引入“分类器预训练”热身阶段：采用一种在训练复杂对抗网络时非常常用且有效的策略：热身 (Warm-up)。在对抗开始前，先不进行域对抗，只让模型在源域数据上做一个普通的分类模型，好好学习几                            轮。等它的分类能力有了一个基本功之后，我们再开启对抗模式，让它在保持分类能力的同时，去学习消除领域差异。
-
-                前10轮模型并不是利用热身阶段的“数据”本身，而是利用通过处理这些数据后学到的“知识”。这个“知识”，就具体存储在模型的**权重（Weights）**中。后面的对抗训练，是直接在热身训
-                练结束后的权重基础上继续进行的，而不是从头开始。训练结束后，模型的权重不再是随机的，而是包含了关于“什么是内圈故障”、“什么是外圈故障”的宝贵初始信息。从第11轮开始，我们“开启”了对抗训练                     (alpha 不再为0)。模型带着前10轮学到的所有分类知识（即更新后的权重），开始接受新的挑战：在保持现有分类能力的同时，还要学会让特征变得“领域通用”，以消除转速差异的影响。
-        3.2.4.6 新增问题 在训练过程中注意到 原始数据不均衡问题 构造脚本verify_imbalance.py 验证，结果保存在class_imbalance_visualization.png
-                        dann_data_loader.py加载的是原始的、不均衡的源域训练数据，并没有包含过采样的步骤。
-                        观察到的**“热身阶段学习缓慢”**的现象，恰恰反过来印证了：正是因为我们的 dann_data_loader.py 没有进行过采样，所以模型才会在面对不平衡数据时学习困难。出可以看到，在分片后的总共                         28,458 个样本中：
-                            “正常 (N)” 类别只有 1,359 个样本。
-                            而数量最多的 “外圈 (OR)” 类别，样本量高达 13,346 个，几乎是“正常”类别的10倍。
-                            “内圈 (IR)”和“滚动体 (B)”的数量也远多于“正常”类别。
-                            这个数据分布解释了为什么我们之前在训练“热身”阶段时，模型的学习速度会那么缓慢——因为它看到的绝大部分都是故障样本，很难学习到稀有的“正常”样本的特征。
-                方案：   引入了加权随机采样器 (WeightedRandomSampler)，它的作用正是在每次抽取训练数据时，提高‘正常’这类稀有样本被抽中的概率，从而在训练层面动态地解决了这个不平衡问题。
-        3.2.4.7***************新增问题
-            没有监控域分类器的准确率
-                    对抗损失权重 ALPHA 固定
-                    在 warmup 后直接用 ALPHA = 0.1，但 DANN 推荐用 进度调度（p 从 0→1）来平滑增加对抗强度。
-                    虽然计算了 lambda_val = 2/(1+exp(-10p))-1，但它只传给了模型的 GRL，没有和 ALPHA 动态结合。这样可能会导致训练不稳定。
-                    学习率未分组现在用同一个 Adam 优化器和同一学习率 1e-3。
-                    方案：
-                    特征提取器 G_f → 小学习率（如 1e-4）；
-                    标签分类器 G_y 和 域分类器 G_d → 稍大一点（如 1e-3）。
-                    未记录 domain loss / acc
-                    没有日志可视化 domain 部分的收敛情况（loss_d, acc_d），不利于诊断。
-                    如果 domain acc 一直接近 100%，说明特征未对齐；如果一直很低，说明域分类器没学到东西。
-                    评价指标单一
-                    你现在只看源域 test accuracy，没有：
-                    目标域预测结果（即使无标签，也可以看置信度分布）；
-                    源域混淆矩阵、F1-score；
-                    t-SNE/UMAP 特征对齐可视化。
-
-                    dann_model.py优化：1. 特征维度太小（64）最后只得到 64 维特征，对轴承振动信号可能不够 2.Domain Classifier 结构太弱3. Label Classifier dropout 太大
-                                    方案：FeatureExtractor
-
-                                    通道数扩展到 32 → 64 → 128 → 256，增强特征表达能力。
-                                    使用多尺度 kernel（32, 16, 8, 3）捕捉不同频率成分。
-                                    最后输出 256 维特征。
-                                    LabelClassifier
-                                    两层隐藏层（128 → 64），dropout=0.3（避免欠拟合）。
-                                    DomainClassifier
-                                    两层隐藏层（128 → 64），dropout=0.5（防止 domain classifier 过强过拟合）。
-                                    forward()
-                                    增加 return_features=True 选项，便于做 t-SNE 可视化。
-                    dann_data_loader.py优化：1：每次 __getitem__ 都 loadmat每个样本都会重新从磁盘读 .mat → 非常慢如果文件较多/较大，训练会非常卡。
-                                            初始化时一次性读入并缓存，而不是每次取样都读磁盘。
-                                            性能优化：加入 .mat 信号缓存，避免每次 __getitem__ 都重复读磁盘。
-                                            健壮性：_get_signal_from_mat 更明确地优先选择常见信号键（如 DE_time, FE_time, BA_time），避免误取 time。
-                                            类别平衡：np.bincount(..., minlength=num_classes)，保证所有类别都有计数，避免索引错误。
-                                            domain_label：直接返回 dataset 的 domain_label，不用在训练脚本里重新构造。
-
-                    性能差：源域单独分类 最高已经到 99%+，这说明：
-                            FeatureExtractor + Classifier 本身是足够强的，数据也没问题。
-                            模型能在源域收敛到很高准确率，所以问题不在数据和特征提取，而是在 DANN 对抗训练的设置。
-                    DANN优化：延长 warmup从 10 → 30 epoch，让分类器先学好，再开始 domain 对抗。减小对抗强度，现在 ALPHA=0.1 太大，可以降到 0.05 或 0.01。
-                                lambda_val 的调度也可以改为更平滑的曲线，而不是快速升到 1
-                                降低学习率，Adam lr 从 0.001 → 0.0005 或更小。
-        3.2.5 最终结果：
-                经过成千上万次的博弈，系统会达到一个平衡：
-                **“画师”（特征提取器）被训练得既能画出让“诊断专家”满意的、可区分故障的画像，又能画出让“鉴别师”**抓狂的、无法区分领域的“中性”画像。
-                这幅最终的“中性”画像，就是我们梦寐以求的**“领域不变特征”**。
-                因为它与领域（转速）无关，所以我们就可以放心地用在源域上训练好的**“诊断专家”**，去诊断来自目标域的画像了，从而实现了迁移学习。
-        
-       
-
-    
-4.预测与分析：编写一个脚本 (predict_target.py)，加载训练好的模型，对16个目标域文件进行预测，并对迁移结果进行可视化分析。
+一、源域数据筛选与读取
+	1.1目标
+		文件指出 “驱动端（DE）信号故障特征最显著，基座（BA）信号仅辅助”，因此第一步代码需实现：
+			1.1.1 遍历源域所有.mat 文件（路径：data/origin）；
+			1.1.2 筛选出含 “DE 信号”（文件中变量名以_DE_time结尾）的文件；
+			1.1.3 读取 DE 信号并验证格式（确保为 1D 振动数据）；
+			1.1.4 按故障类别（正常 N / 滚动体 B / 内圈 IR / 外圈 OR）标注标签（文件附件 1 定义）
+二、降噪处理：文件明确源域振动信号受 “背景噪声、干扰源响应” 影响，需通过小波降噪（文件参考文献 [1] 推荐，适合非平稳振动信号）保留故障冲击特征，削弱噪声；
+标准化处理：消除不同文件信号的幅值量纲差异（如正常信号幅值小、故障信号幅值大），使特征提取时各信号处于同一量级，符合文件 “统一数据格式” 的隐含要求。
+	加载第一步结果：代码自动加载第一步保存的step1_*.npy文件，无需手动修改路径（确保第一步结果与当前代码在同一文件夹）；
+批量小波降噪：遍历 161 个信号，按文件参考文献 [1] 的小波降噪方法处理，每 20 个文件打印一次进度，确保过程可追溯；
+全局标准化：用所有源域信号的全局均值 / 标准差做 Z-score 标准化（文件故障诊断常用），避免单文件统计量偏差，同时保存统计量（后续目标域信号需用相同统计量标准化，符合文件 “跨域数据统一格式” 的迁移逻辑）；
+验证与保存：验证预处理后信号长度、数量无异常，保存结果为step2_*.npy，为第三步 “故障特征提取” 提供干净、统一的信号数据。
+三、时域特征：反映故障冲击特性（文件指出 “故障轴承会产生突变冲击脉冲”），提取 6 个关键统计量；
+频域特征：验证故障周期频率（文件表 2 定义 BPFO/BPFI/BSF），量化频域能量分布；
+时频域特征：融合时域冲击与频域周期（文件指出 “故障信号为非平稳信号，需时频分析”），提取时频熵等特征；
+特征整合：拼接三类特征为统一维度向量，标注对应故障标签，保存为模型可直接加载的格式。
+源域数据筛选与读取 (step1_read_data.py)
+import os
+import re
+import numpy as np
+from scipy.io import loadmat
 
 
------------------------------------------------------------2025/09/22 13：06 问题三---------------------------------------------------------------
+def parse_filename(name_without_ext):
+    """
+    一个健壮的函数，用于解析数据集中所有不同格式的文件名。
+    """
+    fault_type, fault_size, load_hp, rpm_in_filename = None, np.nan, np.nan, np.nan
+
+    # 模式1: 内圈或滚动体故障 (IR/B), 带或不带RPM
+    match = re.match(r'^(IR|B)(\d{3})_(\d)(?:_\((\d+)rpm\))?$', name_without_ext)
+    if match:
+        fault_type, fault_size_str, load_str, rpm_str = match.groups()
+        fault_size = float(fault_size_str) / 1000
+        load_hp = int(load_str)
+        if rpm_str: rpm_in_filename = int(rpm_str)
+        return fault_type, fault_size, load_hp, rpm_in_filename
+
+    # 模式2: 外圈故障 (OR)
+    match = re.match(r'^OR(\d{3})@(\d{1,2})_(\d)$', name_without_ext)
+    if match:
+        fault_type = 'OR'
+        fault_size = float(match.group(1)) / 1000
+        load_hp = int(match.group(3))
+        return fault_type, fault_size, load_hp, rpm_in_filename
+
+    # 模式3: 正常状态 (N), 带或不带RPM
+    match = re.match(r'^N_(\d)(?:_\((\d+)rpm\))?$', name_without_ext)
+    if match:
+        fault_type = 'N'
+        load_str, rpm_str = match.groups()
+        load_hp = int(load_str)
+        if rpm_str: rpm_in_filename = int(rpm_str)
+        return fault_type, fault_size, load_hp, rpm_in_filename
+
+    return fault_type, fault_size, load_hp, rpm_in_filename
+
+
+def step1_read_data():
+    """
+    主函数：遍历、筛选并读取所有源域文件的驱动端(DE)信号。
+    """
+    data_folder = os.path.join('data', 'origin')
+    if not os.path.exists(data_folder):
+        print(f"错误: 根目录 '{data_folder}' 不存在。请检查路径。")
+        return
+
+    # 遍历获取所有.mat文件路径
+    all_mat_files = [os.path.join(root, file) for root, _, files in os.walk(data_folder) for file in files if
+                     file.endswith('.mat')]
+    print(f'检测到 {len(all_mat_files)} 个 .mat 文件。')
+
+    # ▼▼▼ 核心修正：在这里定义 fault_type_map ▼▼▼
+    fault_type_map = {'N': 0, 'OR': 1, 'IR': 2, 'B': 3}
+
+    signals = []
+    labels = []
+
+    processed_count = 0
+    for file_path in all_mat_files:
+        # 从完整路径中提取不带扩展名的文件名
+        name_without_ext = os.path.splitext(os.path.basename(file_path))[0]
+
+        # ▼▼▼ 核心修正：调用解析函数来获取 fault_type ▼▼▼
+        fault_type, _, _, _ = parse_filename(name_without_ext)
+
+        # 如果文件名无法解析，则跳过
+        if fault_type is None:
+            print(f"警告：无法解析文件名 {os.path.basename(file_path)}，已跳过。")
+            continue
+
+        try:
+            data_dict = loadmat(file_path)
+        except Exception as e:
+            print(f"警告：无法加载文件 {file_path}: {e}，已跳过。")
+            continue
+
+        # 筛选出含“DE信号”的文件
+        de_signal_key = next((key for key in data_dict if key.endswith('_DE_time')), None)
+
+        if de_signal_key:
+            signal = data_dict[de_signal_key].flatten()
+            signals.append(signal)
+            labels.append(fault_type_map[fault_type])
+            processed_count += 1
+            if processed_count % 20 == 0:
+                print(f"已处理 {processed_count}/{len(all_mat_files)} 个文件...")
+
+    # 将Python列表转换为Numpy数组以便保存
+    # 使用 dtype=object 是因为信号长度可能不同
+    np.save('step1_signals.npy', np.array(signals, dtype=object))
+    np.save('step1_labels.npy', np.array(labels))
+
+    print(f"\n步骤一完成：共筛选并提取了 {len(signals)} 个驱动端(DE)信号。")
+    print("结果已保存至 'step1_signals.npy' 和 'step1_labels.npy'。")
+
+
+if __name__ == '__main__':
+    step1_read_data()
+
+
+    (step2_preprocess.py)import numpy as np
+import pywt
+from tqdm import tqdm
+
+
+def wavelet_denoise(signal):
+    """
+    使用小波变换对信号进行降噪处理。
+    :param signal: 输入的一维信号数组。
+    :return: 降噪后的信号数组。
+    """
+    # 1. 选择小波基和分解层数
+    # 'db8' (Daubechies 8) 是一种在振动信号分析中常用的小波
+    wavelet = 'db8'
+    # 分解层数可以根据信号长度和采样频率调整，这里选择5层
+    level = 5
+
+    # 2. 对信号进行多层小波分解
+    coeffs = pywt.wavedec(signal, wavelet, level=level)
+
+    # 3. 阈值处理
+    # 计算噪声标准差的估计值（使用第一层高频系数的中位数绝对偏差）
+    sigma = np.median(np.abs(coeffs[-1])) / 0.6745
+    # 使用通用阈值(Universal Threshold)
+    threshold = sigma * np.sqrt(2 * np.log(len(signal)))
+
+    # 对每一层的细节系数（高频部分）进行软阈值处理
+    new_coeffs = [coeffs[0]]  # 首先保留近似系数（低频部分）
+    for i in range(1, len(coeffs)):
+        new_coeffs.append(pywt.threshold(coeffs[i], threshold, mode='soft'))
+
+    # 4. 重构信号
+    denoised_signal = pywt.waverec(new_coeffs, wavelet)
+
+    # 返回与原始信号等长的降噪信号
+    return denoised_signal[:len(signal)]
+
+
+def step2_preprocess():
+    """
+    主函数：加载信号，进行小波降噪和全局标准化。
+    """
+    print("--- 步骤二：开始信号降噪与标准化 ---")
+
+    # 1. 加载第一步的结果
+    try:
+        signals = np.load('step1_signals.npy', allow_pickle=True)
+        print(f"成功加载 {len(signals)} 个原始信号。")
+    except FileNotFoundError:
+        print("错误：未找到 'step1_signals.npy' 文件。请先运行第一步的脚本。")
+        return
+
+    # 2. 批量进行小波降噪
+    print("\n--- 正在进行小波降噪... ---")
+    denoised_signals = [wavelet_denoise(s) for s in tqdm(signals, desc="小波降噪进度")]
+
+    # 3. 全局Z-score标准化
+    print("\n--- 正在进行全局Z-score标准化... ---")
+    # 将所有降噪后的信号拼接成一个长向量，以计算全局统计量
+    concatenated_signals = np.concatenate(denoised_signals)
+    global_mean = np.mean(concatenated_signals)
+    global_std = np.std(concatenated_signals)
+
+    print(f"计算得出全局均值: {global_mean:.4f}")
+    print(f"计算得出全局标准差: {global_std:.4f}")
+
+    # 使用计算出的全局均值和标准差对每个信号进行标准化
+    standardized_signals = [(s - global_mean) / global_std for s in denoised_signals]
+
+    # 4. 验证与保存
+    # 验证处理后的信号数量和类型
+    assert len(standardized_signals) == len(signals), "处理后的信号数量与原始数量不符！"
+    print("\n信号长度与数量验证无异常。")
+
+    # 保存处理后的信号
+    np.save('step2_processed_signals.npy', np.array(standardized_signals, dtype=object))
+    print("已将预处理后的信号保存至 'step2_processed_signals.npy'")
+
+    # 保存用于标准化的全局统计量，这对于后续处理目标域数据至关重要
+    np.savez('global_scaler.npz', mean=global_mean, std=global_std)
+    print("已将全局标准化参数保存至 'global_scaler.npz'")
+
+    print("\n步骤二完成！")
+
+
+if __name__ == '__main__':
+    step2_preprocess()
+
+
+特征提取 (step3_extract_features.py)import numpy as np
+import pywt
+from scipy.stats import kurtosis, skew
+from scipy.fft import fft, fftfreq
+from sklearn.preprocessing import scale
+from tqdm import tqdm
+import pandas as pd
+
+
+def calculate_entropy(coeffs):
+    """计算小波包分解系数的能量熵"""
+    # 移除零系数以避免log(0)
+    coeffs = [c for c in coeffs if c.any()]
+    if not coeffs:
+        return 0
+    # 计算每个频带的能量
+    energy = [np.sum(c ** 2) for c in coeffs]
+    total_energy = np.sum(energy)
+    if total_energy == 0:
+        return 0
+    # 计算每个频带的能量占比
+    p = energy / total_energy
+    # 计算能量熵
+    entropy = -np.sum(p * np.log2(p + 1e-6))  # 加一个小常数避免log(0)
+    return entropy
+
+
+def extract_features(signal_slice, sampling_rate):
+    """
+    从单个信号分片中提取13维特征。
+    """
+    features = {}
+
+    # --- 1. 时域特征 (6维) ---
+    rms = np.sqrt(np.mean(signal_slice ** 2))
+    features['time_rms'] = rms
+    features['time_kurtosis'] = kurtosis(signal_slice)
+    features['time_skewness'] = skew(signal_slice)
+    peak = np.max(np.abs(signal_slice))
+    mean_abs = np.mean(np.abs(signal_slice))
+    # 避免除以零
+    features['time_crest_factor'] = peak / (rms + 1e-6)
+    features['time_shape_factor'] = rms / (mean_abs + 1e-6)
+    features['time_impulse_factor'] = peak / (mean_abs + 1e-6)
+
+    # --- 2. 频域特征 (4维) ---
+    N = len(signal_slice)
+    yf = fft(signal_slice)
+    xf = fftfreq(N, 1 / sampling_rate)
+
+    half_N = N // 2
+    yf_magnitude = np.abs(yf[0:half_N])
+    xf_positive = xf[0:half_N]
+
+    sum_mag = np.sum(yf_magnitude) + 1e-6
+
+    features['freq_centroid'] = np.sum(xf_positive * yf_magnitude) / sum_mag
+    features['freq_rms'] = np.sqrt(np.sum(xf_positive ** 2 * yf_magnitude) / sum_mag)
+    features['freq_variance'] = np.sum(((xf_positive - features['freq_centroid']) ** 2) * yf_magnitude) / sum_mag
+
+    # 包络谱分析，提取最大峰值频率
+    from scipy.signal import hilbert
+    analytic_signal = hilbert(signal_slice)
+    envelope = np.abs(analytic_signal)
+    yf_env = fft(envelope - np.mean(envelope))  # 减去直流分量
+    yf_env_mag = np.abs(yf_env[0:half_N])
+    # 忽略0Hz的直流分量，寻找最大峰
+    peak_freq_index = np.argmax(yf_env_mag[1:]) + 1
+    features['freq_envelope_peak_freq'] = xf_positive[peak_freq_index]
+
+    # --- 3. 时频域特征 (3维) ---
+    # 使用小波包分解
+    wp = pywt.WaveletPacket(data=signal_slice, wavelet='db8', mode='symmetric', maxlevel=3)
+    nodes = wp.get_level(3, order='natural')
+    coeffs = [n.data for n in nodes]
+
+    # 提取三个关键频带的能量熵
+    features['wp_entropy_low'] = calculate_entropy(coeffs[:2])  # 低频带
+    features['wp_entropy_mid'] = calculate_entropy(coeffs[2:5])  # 中频带
+    features['wp_entropy_high'] = calculate_entropy(coeffs[5:])  # 高频带
+
+    return features
+
+
+def step3_extract_features():
+    """
+    主函数：加载预处理后的信号，进行分片和特征提取。
+    """
+    print("--- 步骤三：开始分片与特征提取 ---")
+
+    # 1. 加载第二步的结果
+    try:
+        signals = np.load('step2_processed_signals.npy', allow_pickle=True)
+        labels = np.load('step1_labels.npy', allow_pickle=True)
+        print(f"成功加载 {len(signals)} 个预处理后的信号和标签。")
+    except FileNotFoundError as e:
+        print(f"错误：找不到文件 {e.filename}。请先运行第一步和第二步的脚本。")
+        return
+
+    # 定义分片参数
+    WINDOW_SIZE = 2048
+    STEP_SIZE = 1024
+    # 注意：采样频率对于特征提取很重要，但由于我们的数据源有两种采样频率，
+    # 且已在预处理中标准化，这里我们使用一个“名义”采样率来进行FFT频率轴的计算。
+    # 实际应用中，如果采样率差异大，最好分开处理或重采样。此处假设为12kHz。
+    SAMPLING_RATE = 12000
+
+    all_features = []
+    all_labels = []
+
+    print("\n--- 正在进行分片和特征提取... ---")
+    # 遍历每一个信号
+    for i in tqdm(range(len(signals)), desc="信号处理进度"):
+        signal = signals[i]
+        label = labels[i]
+
+        # 滑动窗口分片
+        for start in range(0, len(signal) - WINDOW_SIZE + 1, STEP_SIZE):
+            end = start + WINDOW_SIZE
+            signal_slice = signal[start:end]
+
+            # 提取特征
+            features = extract_features(signal_slice, SAMPLING_RATE)
+
+            # 将特征和标签添加到总列表中
+            all_features.append(list(features.values()))
+            all_labels.append(label)
+
+    # 转换为Numpy数组
+    X = np.array(all_features)
+    y = np.array(all_labels)
+
+    # 验证数据
+    print(f"\n特征提取完成！总共生成了 {X.shape[0]} 个样本。")
+    print(f"特征矩阵的形状: {X.shape}")  # 应该为 (样本数, 13)
+    print(f"标签向量的形状: {y.shape}")
+
+    # 检查是否有NaN或inf值
+    if np.any(np.isnan(X)) or np.any(np.isinf(X)):
+        print("\n警告：特征矩阵中存在NaN或inf值，正在进行清理...")
+        # 使用pandas清理后转回numpy
+        df = pd.DataFrame(X)
+        original_rows = df.shape[0]
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        # 找到含有NaN的行，以便在标签中也删除它们
+        nan_rows = df.isnull().any(axis=1)
+        df.dropna(inplace=True)
+
+        dropped_indices = original_rows - df.shape[0]
+        if dropped_indices > 0:
+            print(f"已丢弃 {dropped_indices} 个包含无效值的样本。")
+
+        X = df.values
+        # 相应地更新标签
+        y = y[~nan_rows]
+
+    # 保存最终的特征矩阵和标签
+    np.save('step3_features.npy', X)
+    np.save('step3_labels.npy', y)
+    print("\n已将最终的特征矩阵和标签保存至 'step3_features.npy' 和 'step3_labels.npy'")
+
+    print("\n步骤三完成！")
+
+
+if __name__ == '__main__':
+    step3_extract_features()
+
+
+
+
+二、任务 2 “源域故障诊断”
+		核心是基于已提取的 13 维源域特征（时域 6 维 + 频域 4 维 + 时频域 3 维），设计诊断模型并验证其在源域的故障分类能力
+	2.1划分源域训练集与测试集
+		数据规模：源域共 161 个样本，故障类别分布为 “正常 4 个、滚动体 40 个、内圈 40 个、外圈 77 个”（文件附件 1 明确）；
+		划分比例：推荐按 8:2 划分（兼顾训练集规模与测试集代表性），即 129 个训练样本、32 个测试样本；
+		分层原则：每类故障按比例分配样本（如正常样本 4 个→训练 3 个、测试 1 个；滚动体 40 个→训练 32 个、测试 8 个），确保训练集与测试集的故障类别分布一致，避免模型偏				向多数类（如外圈故障）。
+	2.2 设计源域故障诊断模型  随机森林模型实现源域诊断模型
